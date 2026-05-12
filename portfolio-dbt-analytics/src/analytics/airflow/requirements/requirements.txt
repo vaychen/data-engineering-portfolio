@@ -1,0 +1,18 @@
+# MWAA 2.7.2 runtime Python dependencies.
+# Keep in sync with [dependency-groups.mwaa] in pyproject.toml.
+#
+# dbt-core and dbt-redshift are installed by the MWAA startup script
+# (dbt_install.sh) into a dedicated virtualenv at $DBT_CORE_VENV_PATH —
+# separate from the MWAA worker environment. They are listed here so that
+# local `make install` mirrors what the worker loads at runtime, but they
+# do NOT share a pip resolver with mysql-connector-python at deploy time.
+#
+# dbt-core 1.10.* requires protobuf>=6.0 while mysql-connector-python==8.1.0
+# requires protobuf<=4.21.12. This is not a conflict in practice because the
+# two packages live in separate Python environments (MWAA worker vs dbt venv).
+
+apache-airflow[amazon]==2.7.2
+apache-airflow-providers-mysql==5.3.1
+apache-airflow-providers-postgres==5.6.1
+mysql-connector-python==8.1.0
+mysqlclient==2.2.0

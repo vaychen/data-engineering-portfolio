@@ -1,0 +1,4 @@
+apache-airflow==2.7.2
+boto3~=1.35.27
+psycopg2~=2.9.9
+sqlalchemy~=1.4.49

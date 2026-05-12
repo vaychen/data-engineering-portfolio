@@ -1,0 +1,28 @@
+{
+  "event_name": "nova-telemetry-record",
+  "event_schema_version": 2,
+  "event_guid": "550e8400-e29b-41d4-a716-446655440002",
+  "event_timestamp": "2024-03-15T08:01:30+00:00",
+  "client_ctx": {
+    "name": "nova-android",
+    "variant": "prod",
+    "version": "3.12.0",
+    "build": "2024.03.15.1001",
+    "client_id": "550e8400-e29b-41d4-a716-446655440003",
+    "mono_time": 92500,
+    "is_background": false,
+    "session_id": 2,
+    "time_since_last_event": 90000
+  },
+  "nova_ctx": {
+    "event_name": "device_pairing_record",
+    "oob_bt_connect": "connected",
+    "product_ctx": {
+      "name": "PRODUCT_A",
+      "product_id": "0x1A2B",
+      "variant": 3,
+      "guid": "550e8400-e29b-41d4-a716-446655440004",
+      "firmware_version": "1.4.2"
+    }
+  }
+}

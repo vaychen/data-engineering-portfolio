@@ -1,0 +1,102 @@
+name: analytics_pipeline
+version: "1.0.0"
+config-version: 2
+
+profile: analytics_pipeline
+
+model-paths: ["analytics_project/models"]
+macro-paths: ["analytics_project/macros"]
+seed-paths: ["analytics_project/seeds"]
+test-paths: ["analytics_project/tests"]
+analysis-paths: ["analytics_project/analyses"]
+snapshot-paths: ["analytics_project/snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# ---------------------------------------------------------------------------
+# Model configurations
+# Each layer maps to a distinct Redshift schema / database, driven by vars
+# so the same project file works for dev, staging, and production.
+# ---------------------------------------------------------------------------
+models:
+  analytics_pipeline:
+
+    source_data:
+      +materialized: incremental
+      +incremental_strategy: append
+      +full_refresh: false
+      +on_schema_change: sync_all_columns
+      +tags: ["source_data"]
+
+    meta_data:
+      +materialized: view
+      +tags: ["meta_data"]
+
+    etl_data:
+      +materialized: incremental
+      +incremental_strategy: append
+      +full_refresh: false
+      +on_schema_change: sync_all_columns
+      +tags: ["etl_data"]
+
+    aggregation_data:
+      +materialized: incremental
+      +incremental_strategy: append
+      +on_schema_change: sync_all_columns
+      +tags: ["aggregation_data"]
+
+    report_data:
+      +materialized: view
+      +tags: ["report_data"]
+
+# ---------------------------------------------------------------------------
+# Seeds
+# ---------------------------------------------------------------------------
+seeds:
+  analytics_pipeline:
+    +schema: "{{ var('analytics_schema_metadata') }}"
+    +database: "{{ var('analytics_database') }}"
+
+# ---------------------------------------------------------------------------
+# Variables
+#
+# analytics_database               – target Redshift database name
+# analytics_schema_source          – schema for source_data layer
+# analytics_schema_etl             – schema for etl_data layer
+# analytics_schema_metadata        – schema for meta_data layer
+# analytics_schema_aggregation     – schema for aggregation_data layer
+# analytics_schema_report          – schema for report_data layer
+#
+# airflow_ds                       – Airflow logical date (YYYY-MM-DD).
+#                                    Falls back to run_started_at when unset.
+# analytics_backfill_days          – how many days before airflow_ds to
+#                                    (re-)process. Default = 1 (yesterday only).
+# analytics_initial_partition_date – hard floor for any backfill window.
+# backfill_days_by_event           – dict of {event_slug: days} overrides.
+# nova_event_name                  – when set, ODS model processes only this
+#                                    one event type (useful for targeted reruns).
+# ---------------------------------------------------------------------------
+vars:
+  # --- database / schema routing -------------------------------------------
+  analytics_database: "analytics_dw"
+  analytics_schema_source: "analytics_source"
+  analytics_schema_etl: "analytics_dw"
+  analytics_schema_metadata: "analytics_metadata"
+  analytics_schema_aggregation: "analytics_aggregation"
+  analytics_schema_report: "analytics_report"
+
+  # --- backfill window ------------------------------------------------------
+  analytics_backfill_days: 1
+  analytics_initial_partition_date: "2023-01-01"
+
+  # --- per-event backfill overrides (populated by Airflow at runtime) -------
+  backfill_days_by_event: {}
+
+  # --- single-event filter (optional) --------------------------------------
+  nova_event_name: ~
+
+  # --- Airflow execution date (overridden by DAG --vars injection) ----------
+  airflow_ds: ~

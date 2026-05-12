@@ -1,0 +1,326 @@
+# =============================================================================
+# CloudFormation: storage.yaml
+# Stack   : Analytics storage infrastructure
+# Purpose : S3 landing/schema/report buckets, S3 Tables bucket + namespace +
+#           dim_product Iceberg table, Lake Formation cross-account setting.
+#
+# Sanitised portfolio sample — no real account IDs, product names, or internal
+# service names. Translated from CDK StorageStack (storage.ts).
+#
+# Parameters
+# ----------
+# Environment : dev | staging | prod
+#
+# Omissions vs. CDK reference (intentional for portfolio scope)
+# -------------------------------------------------------------
+# - Quarantine bucket omitted (batch-only POC, consistent with CDK flag)
+# - Only dim_product Iceberg table included; event/ODS/DWD/DWS tables omitted
+#   to keep the sample focused on the dimension-loading pattern shown in
+#   glue_jobs/dims/product_dim.py
+# =============================================================================
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Analytics storage infrastructure for the mobile-analytics lakehouse POC.
+  Provisions raw, schema, and report S3 buckets; an S3 Tables bucket with
+  a curated namespace; and the dim_product Iceberg table.
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Default: dev
+    Description: Target deployment environment.
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+Resources:
+
+  # -------------------------------------------------------------------------
+  # Raw bucket — Firehose / batch landing zone (JSONL.gz)
+  # Lifecycle: current objects expire after 90 days; noncurrent after 30 days.
+  # -------------------------------------------------------------------------
+  RawBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireCurrentObjects
+            Status: Enabled
+            ExpirationInDays: 90
+          - Id: ExpireNoncurrentVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+
+  RawBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref RawBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyNonSSLRequests
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt RawBucket.Arn
+              - !Sub "${RawBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+
+  # -------------------------------------------------------------------------
+  # Schema bucket — protobuf descriptor blobs; no current-object expiration.
+  # -------------------------------------------------------------------------
+  SchemaBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireNoncurrentVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+
+  SchemaBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SchemaBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyNonSSLRequests
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt SchemaBucket.Arn
+              - !Sub "${SchemaBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+
+  # -------------------------------------------------------------------------
+  # Report bucket — daily Parquet snapshots of computed report views.
+  # Each report lands at: s3://<bucket>/vw_product_telemetry_<name>/<YYYYMMDD>/
+  # -------------------------------------------------------------------------
+  ReportBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireNoncurrentVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+
+  ReportBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ReportBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyNonSSLRequests
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt ReportBucket.Arn
+              - !Sub "${ReportBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+
+  # -------------------------------------------------------------------------
+  # S3 Tables bucket
+  # Fixed name required so the Glue REST catalog config can reference it
+  # statically: analytics-tables-<env>-<AccountId>
+  # DeletionPolicy: Retain — stateful Iceberg metadata must survive stack tears.
+  # -------------------------------------------------------------------------
+  S3TablesBucket:
+    Type: AWS::S3Tables::TableBucket
+    DeletionPolicy: Retain
+    Properties:
+      TableBucketName: !Sub "analytics-tables-${Environment}-${AWS::AccountId}"
+
+  # -------------------------------------------------------------------------
+  # S3 Tables namespace
+  # Fixed name referenced in Spark/Glue catalog config: analytics_curated_<env>
+  # -------------------------------------------------------------------------
+  S3TablesNamespace:
+    Type: AWS::S3Tables::Namespace
+    Properties:
+      TableBucketARN: !GetAtt S3TablesBucket.TableBucketARN
+      Namespace:
+        - !Sub "analytics_curated_${Environment}"
+
+  # -------------------------------------------------------------------------
+  # dim_product Iceberg table
+  # Schema matches analytics_dw.dim_product (dim_product.sql).
+  # This is the only table included in the portfolio sample; the full
+  # production stack defines additional ODS/DWD/DWS event tables.
+  # -------------------------------------------------------------------------
+  DimProductTable:
+    Type: AWS::S3Tables::Table
+    Properties:
+      TableBucketARN: !GetAtt S3TablesBucket.TableBucketARN
+      Namespace: !Sub "analytics_curated_${Environment}"
+      Name: dim_product
+      Format: ICEBERG
+      Metadata:
+        Iceberg:
+          Schema:
+            Fields:
+              - Name: product_id
+                Type: string
+                Required: true
+              - Name: product_guid
+                Type: string
+                Required: true
+              - Name: product_name
+                Type: string
+                Required: true
+              - Name: product_category
+                Type: string
+                Required: false
+              - Name: product_line
+                Type: string
+                Required: false
+              - Name: launch_date
+                Type: date
+                Required: false
+              - Name: is_active
+                Type: boolean
+                Required: true
+              - Name: updated_at
+                Type: timestamp
+                Required: true
+    DependsOn: S3TablesNamespace
+
+  # -------------------------------------------------------------------------
+  # Lake Formation cross-account version
+  # CROSS_ACCOUNT_VERSION=4 is required for federated catalogs (S3 Tables
+  # integration with Glue/Athena/Redshift Spectrum).
+  # MutationType: APPEND avoids replacing existing admins or default permissions.
+  # -------------------------------------------------------------------------
+  LakeFormationCrossAccountVersion:
+    Type: AWS::LakeFormation::DataLakeSettings
+    Properties:
+      MutationType: APPEND
+      Parameters:
+        CROSS_ACCOUNT_VERSION: "4"
+        SET_CONTEXT: "TRUE"
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+
+  RawBucketName:
+    Description: Raw landing bucket name
+    Value: !Ref RawBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-RawBucketName"
+
+  RawBucketArn:
+    Description: Raw landing bucket ARN
+    Value: !GetAtt RawBucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-RawBucketArn"
+
+  SchemaBucketName:
+    Description: Schema (protobuf descriptors) bucket name
+    Value: !Ref SchemaBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-SchemaBucketName"
+
+  SchemaBucketArn:
+    Description: Schema bucket ARN
+    Value: !GetAtt SchemaBucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-SchemaBucketArn"
+
+  ReportBucketName:
+    Description: Report Parquet snapshots bucket name
+    Value: !Ref ReportBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-ReportBucketName"
+
+  ReportBucketArn:
+    Description: Report Parquet snapshots bucket ARN
+    Value: !GetAtt ReportBucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ReportBucketArn"
+
+  S3TablesBucketName:
+    Description: S3 Tables bucket name
+    Value: !Sub "analytics-tables-${Environment}-${AWS::AccountId}"
+    Export:
+      Name: !Sub "${AWS::StackName}-S3TablesBucketName"
+
+  S3TablesBucketArn:
+    Description: S3 Tables bucket ARN
+    Value: !GetAtt S3TablesBucket.TableBucketARN
+    Export:
+      Name: !Sub "${AWS::StackName}-S3TablesBucketArn"
+
+  S3TablesNamespaceName:
+    Description: S3 Tables namespace (Glue catalog database name)
+    Value: !Sub "analytics_curated_${Environment}"
+    Export:
+      Name: !Sub "${AWS::StackName}-S3TablesNamespaceName"
+
+  DimProductTableName:
+    Description: dim_product Iceberg table name
+    Value: dim_product
+    Export:
+      Name: !Sub "${AWS::StackName}-DimProductTableName"
